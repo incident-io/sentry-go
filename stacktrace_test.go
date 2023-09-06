@@ -25,6 +25,57 @@ func BenchmarkNewStacktrace(b *testing.B) {
 	}
 }
 
+func TestRemoveOriginPrefix(t *testing.T) {
+	tests := []struct {
+		in  string // what go 1.21+ will provide as a function name
+		out string // what we would like for grouping purposes
+	}{
+		// Either lacking prefixes or simple cases.
+		{"(*ContextGroup).Handle.func1", "Handle.func1"},
+		{"(*ContextGroup).wrapHandler.func1", "wrapHandler.func1"},
+		{"ApplySecurity.(*Secure).Handler.func1", "Handler.func1"},
+		{"Create.func1", "Create.func1"},
+		{"NewCreateHandler.func1", "NewCreateHandler.func1"},
+		{"NewEndpoints.NewCreateEndpoint.func3", "NewCreateEndpoint.func3"},
+		{"SinglePageApp.func1.1", "SinglePageApp.func1.1"},
+		{"Transaction0.func1", "Transaction0.func1"},
+		{"Transaction[...].func1", "Transaction[...].func1"},
+		// Selection of function names from a real production application that follows
+		// idiomatic Go HTTP middleware setup, causing each middleware function to be named
+		// with a prefix of where it was constructed from within the top-level Run method.
+		//
+		// This is a particularly bad situation for issue grouping as whenever anyone adds a
+		// new middleware the numbers will change, causing all ~70 functions to be renumbered
+		// and any issues associated with them to appear as new.
+		//
+		// The aim is to remove this prefix.
+		{"Run.func62.Run.func62.AuthenticationFromToken.func1.func2", "AuthenticationFromToken.func1.func2"},
+		{"Run.func62.APIRewrite.func1", "APIRewrite.func1"},
+		{"BuildHTTP.func2.AuthenticationRequired.func9.1", "AuthenticationRequired.func9.1"},
+		{"BuildHTTP.func2.CatchIntegrationConnectionErrors.func4.1", "CatchIntegrationConnectionErrors.func4.1"},
+		{"BuildHTTP.func2.CatchRBAC.func10.1", "CatchRBAC.func10.1"},
+		{"BuildHTTP.func2.CatchValidationErrors.func3.1", "CatchValidationErrors.func3.1"},
+		{"BuildHTTP.func2.Observe.func11.1", "Observe.func11.1"},
+		{"BuildHTTP.func2.Observe.func11.1.1", "Observe.func11.1.1"},
+		{"BuildHTTP.func2.ProvideCache.func1.1", "ProvideCache.func1.1"},
+		{"BuildHTTP.func2.ProvidePublisher.func2.1", "ProvidePublisher.func2.1"},
+		{"BuildHTTP.func2.ScopeByIncident.func5.1", "ScopeByIncident.func5.1"},
+		{"Run.func58.Run.func58.ObserveZendeskHTTP.func1.func2", "ObserveZendeskHTTP.func1.func2"},
+		{"Run.func59.AuthenticationFromStore.func1", "AuthenticationFromStore.func1"},
+		{"Run.func60.Run.func60.WithSession.func1.func2", "WithSession.func1.func2"},
+		{"Run.func61.Run.func61.AuthenticationFromToken.func1.func2", "AuthenticationFromToken.func1.func2"},
+		{"Run.func62.APIRewrite.func1", "APIRewrite.func1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			actual := removeOriginPrefix(tt.in)
+			if diff := cmp.Diff(tt.out, actual); diff != "" {
+				t.Errorf("Function name mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 // nolint: scopelint // false positive https://github.com/kyoh86/scopelint/issues/4
 func TestSplitQualifiedFunctionName(t *testing.T) {
 	tests := []struct {

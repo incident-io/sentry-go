@@ -3,6 +3,7 @@ package sentry
 import (
 	"go/build"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -225,7 +226,7 @@ func newFrame(module string, function string, file string, line int) Frame {
 	frame := Frame{
 		Lineno:   line,
 		Module:   module,
-		Function: function,
+		Function: removeOriginPrefix(function),
 	}
 
 	switch {
@@ -250,6 +251,90 @@ func newFrame(module string, function string, file string, line int) Frame {
 	setInAppFrame(&frame)
 
 	return frame
+}
+
+var (
+	funcRegex = regexp.MustCompile(`\.func\d+(.\d+)*$`)
+	nameRegex = regexp.MustCompile(`([^.]+)$`)
+)
+
+// removeOriginPrefix removes the prefix to a function name that has been added in go
+// 1.21+.
+//
+// Previous to this change, if you had a program like:
+//
+//	func main() {
+//			Run()
+//	}
+//
+//	func Run() {
+//			Closure()()
+//	}
+//
+//	func Closure() func() {
+//			return func() {
+//				data, _ := json.MarshalIndent(sentry.NewStacktrace(), "", "  ")
+//				fmt.Println(string(data))
+//			}
+//	}
+//
+// The function name for code within the closured function calling sentry.NewStacktrace()
+// would be `Closure.func1`. With the release of go 1.21, the runtime stores that this
+// closured function was generated from an original call from Run, and the function name
+// will appear to be `Run.Closure.func1`.
+//
+// This is often not how you'd like to group Sentry exceptions, as errors returned from
+// that closured function should probably be grouped irrespective of how the closured
+// function was first created.
+//
+// This function removes the prefix added by go 1.21 to approximate how previous go
+// versions used to create functions. It's worth noting that 1.21 came with other changes
+// around the format of these strings so it's likely upgrading will bust issue grouping
+// anyway, but this will reduce some volatility between the same error causes even going
+// forward on 1.21.
+func removeOriginPrefix(funcName string) string {
+	// When a function is generic the funcName will have `Name[...]`. This is problematic
+	// when we try matching on tokens between periods, as the elipsis will trigger the
+	// period boundary.
+	//
+	// If we replace ... with a special marker before we start splitting we can avoid this,
+	// and we just have to put it back at the end.
+	name := strings.ReplaceAll(funcName, "...", "~~ELIPSIS~~")
+
+	var result string
+	for {
+		// Try finding `funcX.Y` suffixes.
+		matches := funcRegex.FindStringSubmatch(name)
+
+		// If we find them, we want to...
+		if len(matches) > 0 {
+			// Prefix add it to our result.
+			result = matches[0] + result
+			// Replace it from the suffix of our name, so on the next loop we don't reprocess it.
+			name = funcRegex.ReplaceAllString(name, "")
+
+			continue
+		}
+
+		// If we can't find any, we need to check for a symbol name that might have owned
+		// these functions such as `ServeHTTP` or `Handler`. If we find one, we can add it,
+		// but either way we should stop the outer loop.
+		if matches := nameRegex.FindStringSubmatch(name); len(matches) > 0 {
+			result = matches[0] + result
+		}
+
+		// We don't want anything to the left of the owning symbol in the module that this
+		// function is located in, as that might include the name of the function that this
+		// code was originally defined in (e.g. Run.func58.Run.func58) that screws up stack
+		// trace matching.
+		break
+	}
+
+	// Remove the marker we use to avoid matching on generic shape placeholders which are
+	// normally elipsises (and so trigger matches on periods).
+	result = strings.ReplaceAll(result, "~~ELIPSIS~~", "...")
+
+	return result
 }
 
 // splitQualifiedFunctionName splits a package path-qualified function name into
